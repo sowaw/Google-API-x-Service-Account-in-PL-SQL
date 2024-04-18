@@ -1,5 +1,30 @@
 create or replace package body google_drive_pkg as
 
+-- CONSTANTS
+  c_google_access_token_coll_name constant varchar2(50) := 'GOOGLE_API_ACCESS_TOKEN';
+
+-- EXCEPTIONS
+
+  e_token_endpoint_call_error exception;
+  pragma exception_init(e_token_endpoint_call_error, -20001);
+
+  e_api_endpoint_call_error exception;
+  pragma exception_init(e_token_endpoint_call_error, -20002);  
+
+-- PRIVATE PROCEDURES AND FUNCTIONS
+
+  procedure p_add_apex_error(pi_message in varchar2)
+  is
+  begin
+    apex_error.add_error(
+      p_message          => pi_message,
+      p_display_location => apex_error.c_inline_in_notification
+    );
+  exception
+    when others then
+      raise;
+  end p_add_apex_error;
+
   function f_get_service_account_private_key
   return varchar2 
   is
@@ -21,6 +46,43 @@ create or replace package body google_drive_pkg as
       raise;
   end f_extract_folder_id_from_url;
 
+  procedure p_store_access_token(pi_access_token in varchar2)
+  is
+  begin
+    apex_collection.create_collection(
+      p_collection_name    => c_google_access_token_coll_name,
+      p_truncate_if_exists => 'YES'
+    );
+
+    apex_collection.add_member(
+      p_collection_name => c_google_access_token_coll_name,
+      p_c001            => pi_access_token
+    );    
+  exception
+    when others then
+      raise;
+  end p_store_access_token;
+
+  function f_get_access_token_from_storage
+  return varchar2 
+  is
+    l_return varchar2(4000);
+  begin
+    select ac.c001
+      into l_return
+      from apex_collections ac
+     where collection_name = c_google_access_token_coll_name
+       and seq_id = 1;
+    
+    return l_return;
+  exception
+    when no_data_found then 
+      l_return := null;
+      return l_return;
+    when others then
+      raise;
+  end f_get_access_token_from_storage;
+
   function f_get_access_token
   return varchar2
   is
@@ -29,7 +91,7 @@ create or replace package body google_drive_pkg as
     c_google_api_token_endpoint        constant varchar2(4000) := 'https://oauth2.googleapis.com/token';
     c_google_api_token_request_url     constant varchar2(4000) := 'https://oauth2.googleapis.com/token?grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer' || chr(38) ||'assertion=';
 
-    l_current_token varchar2(500);
+    l_current_token     varchar2(4000);
 
     l_jwt_header        varchar2(4000);
     l_jwt_header_base64 varchar2(4000);
@@ -44,11 +106,19 @@ create or replace package body google_drive_pkg as
 
     l_token_request_url varchar2(4000);
     l_clob              clob;
+
+    l_return            varchar2(4000);
+
+    
   begin
     -- 1st step - get current token from apex colletion or any other place where you will store it
-    -- l_current_token := f_get_current_access_token;
+    l_current_token := f_get_access_token_from_storage;
 
-    if l_current_token is null then
+    if l_current_token is not null then
+      -- reuse the stored token
+      l_return := l_current_token;
+    else
+      -- otherwise make a call to get a new one
       l_jwt_header := '{"alg":"RS256", "typ":"JWT"}';
       l_jwt_claim  := '{' ||
                       '"iss":"' || c_google_api_service_account_email || '"' ||
@@ -84,23 +154,33 @@ create or replace package body google_drive_pkg as
         p_http_method => 'POST'
       );
 
-      -- TODO read the status code property and decide how to handle the error
-      apex_json.parse(l_clob);
+      if apex_web_service.g_status_code = 200 then
+        apex_json.parse(l_clob);
 
-      -- TODO save token in collection or any other place to store it
-      -- Then return those new values
-      return apex_json.get_varchar2('token_type') || ' ' || apex_json.get_varchar2('access_token');       
+        -- return new values
+        l_return := apex_json.get_varchar2('token_type') || ' ' || apex_json.get_varchar2('access_token'); 
+
+        -- save token in collection or any other place to store it
+        p_store_access_token(pi_access_token => l_return);
+      else
+        raise e_token_endpoint_call_error;
+      end if;
     end if;
+
+    return l_return;
   exception
     when others then
       raise;
   end f_get_access_token;
 
-  procedure p_list_images_by_parent_folder(pi_folder_id in varchar2)
+  function f_list_images_by_parent_folder(pi_folder_id in varchar2)
+  return boolean
   is
     l_access_token       varchar2(4000);
     l_clob               clob;
     l_list_files_api_url varchar2(4000);
+
+    l_return             boolean := false;
 
     c_collection_name    constant varchar2(50) := 'GOOGLE_DRIVE_API_OUTPUT';
 
@@ -154,54 +234,65 @@ create or replace package body google_drive_pkg as
       p_http_method => 'GET'
     );
 
-    dbms_output.put_line('status code: ' || apex_web_service.g_status_code);
-    dbms_output.put_line('reason phrase: ' || apex_web_service.g_reason_phrase);
-    dbms_output.put_line('clob: ' || l_clob);
-
-    -- dbms_output.put_line(l_clob);
-
-    -- TODO handle the status code before the api call
-
-    -- TODO what it returns the result even if the resource is not shared yet
-
-    -- TODO open the cursor fetch the %found property and depending on, create the collection
-
-    apex_collection.create_collection(
-      p_collection_name    => c_collection_name,
-      p_truncate_if_exists => 'YES'
-    );
-
-    -- transform data got from api and load into apex collection
-    for rec in cur_images_from_google_api(p_clob => l_clob) loop
-      dbms_output.put_line(rec.id);
-      dbms_output.put_line(rec.name);
-      dbms_output.put_line(rec.thumbnail_url);
-
-      apex_collection.add_member(
-        p_collection_name => c_collection_name,
-        p_c001            => rec.name,
-        p_c002            => rec.thumbnail_url
+    if apex_web_service.g_status_code = 200 then
+      apex_collection.create_collection(
+        p_collection_name    => c_collection_name,
+        p_truncate_if_exists => 'YES'
       );
-    end loop;
 
-    -- TODO test solution in APEX context
+      -- transform data got from api and load into apex collection
+      for rec in cur_images_from_google_api(p_clob => l_clob) loop
+        apex_collection.add_member(
+          p_collection_name => c_collection_name,
+          p_c001            => rec.name,
+          p_c002            => rec.thumbnail_url
+        );
+      end loop;
+
+      l_return := true;
+    elsif apex_web_service.g_status_code = 401 then
+      -- current access token is not valid anymore, so we try to repeat this function
+      -- so get the new token. this function will also save it in its storage
+      l_access_token := f_get_access_token;
+
+      l_return := false;
+    else
+      raise e_api_endpoint_call_error;
+    end if;
+
+    return l_return;
+
   exception
     when others then
       raise;
-  end p_list_images_by_parent_folder;
+  end f_list_images_by_parent_folder;
 
+
+-- PUBLIC PROCEDURES AND FUNCTIONS
   procedure p_get_before_and_after_images(pi_image_folder in varchar2)
   is
     l_parent_folder_id varchar2(50);
     l_access_token     varchar2(4000);
+
+    l_is_list_function_result_correct boolean;
   begin
     -- extract folder id from the passed URL
     l_parent_folder_id := f_extract_folder_id_from_url(pi_url => pi_image_folder);
 
     -- call the api
-    p_list_images_by_parent_folder(pi_folder_id => l_parent_folder_id);
+    l_is_list_function_result_correct := f_list_images_by_parent_folder(pi_folder_id => l_parent_folder_id);
+
+    -- this part will be executed when the first call took the invalid access token for this moment
+    if not l_is_list_function_result_correct then
+      l_is_list_function_result_correct := f_list_images_by_parent_folder(pi_folder_id => l_parent_folder_id);
+    end if;
   exception
-    when others then 
+    when e_token_endpoint_call_error then
+      p_add_apex_error(pi_message => 'There is an error when getting the access token.');
+    when e_api_endpoint_call_error then
+      p_add_apex_error(pi_message => 'There is an error when calling the Google API.');
+    when others then
+      p_add_apex_error(pi_message => 'There is an unexpected error: ' || sqlerrm); 
       raise;
   end p_get_before_and_after_images;
 

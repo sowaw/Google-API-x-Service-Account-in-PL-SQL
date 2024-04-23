@@ -11,6 +11,9 @@ create or replace package body google_drive_pkg as
   e_api_endpoint_call_error exception;
   pragma exception_init(e_token_endpoint_call_error, -20002);  
 
+  e_api_endpoint_call_failed exception;
+  pragma exception_init(e_token_endpoint_call_error, -20003);    
+
 -- PRIVATE PROCEDURES AND FUNCTIONS
 
   procedure p_add_apex_error(pi_message in varchar2)
@@ -40,7 +43,7 @@ create or replace package body google_drive_pkg as
   return varchar2 
   is
   begin
-    return regexp_substr(pi_url, '\w{25,}');
+    return regexp_substr(pi_url, '(\w|-){25,}');
   exception
     when others then
       raise;
@@ -83,7 +86,7 @@ create or replace package body google_drive_pkg as
       raise;
   end f_get_access_token_from_storage;
 
-  function f_get_access_token
+  function f_get_access_token(pi_must_get_new_token boolean default false)
   return varchar2
   is
     c_google_api_service_account_email constant varchar2(4000) := 'rewild-earth-service-account@rewildearth.iam.gserviceaccount.com';
@@ -112,12 +115,19 @@ create or replace package body google_drive_pkg as
     
   begin
     -- 1st step - get current token from apex colletion or any other place where you will store it
-    l_current_token := f_get_access_token_from_storage;
+    if not pi_must_get_new_token then
+      l_current_token := f_get_access_token_from_storage;
+    end if;
 
-    if l_current_token is not null then
+    -- 2nd step - if there was a token in storage, and there is no request to generate a new one, 
+    -- just grab the existing token
+    if l_current_token is not null and not pi_must_get_new_token then
       -- reuse the stored token
       l_return := l_current_token;
     else
+      -- TODO check lock on the row with token - autonomous transaction with commit!
+      -- TODO if the token row is locked, then raise exception and return false/raise exception
+      -- TODO lock the row when exists and must get the new one
       -- otherwise make a call to get a new one
       l_jwt_header := '{"alg":"RS256", "typ":"JWT"}';
       l_jwt_claim  := '{' ||
@@ -138,7 +148,7 @@ create or replace package body google_drive_pkg as
                                pubkey_alg => as_crypto.key_type_rsa,
                                sign_alg   => as_crypto.sign_sha256_rsa);
 
-      l_signature := as_crypto.base64url_encode(p_raw => l_sign);
+      l_signature := as_crypto.base64url_encode(p_raw => l_sign);     
 
       l_full_jwt_base64 := l_jwt_header_base64 || '.' || l_jwt_claim_base64 || '.' || l_signature;
 
@@ -162,7 +172,9 @@ create or replace package body google_drive_pkg as
 
         -- save token in collection or any other place to store it
         p_store_access_token(pi_access_token => l_return);
+        -- TODO unlock the row with token
       else
+        -- TODO unlock the row with token
         raise e_token_endpoint_call_error;
       end if;
     end if;
@@ -253,7 +265,7 @@ create or replace package body google_drive_pkg as
     elsif apex_web_service.g_status_code = 401 then
       -- current access token is not valid anymore, so we try to repeat this function
       -- so get the new token. this function will also save it in its storage
-      l_access_token := f_get_access_token;
+      l_access_token := f_get_access_token(pi_must_get_new_token => true);
 
       l_return := false;
     else
@@ -278,6 +290,7 @@ create or replace package body google_drive_pkg as
   begin
     -- extract folder id from the passed URL
     l_parent_folder_id := f_extract_folder_id_from_url(pi_url => pi_image_folder);
+    -- TODO when this is null then raise another exception
 
     -- call the api
     l_is_list_function_result_correct := f_list_images_by_parent_folder(pi_folder_id => l_parent_folder_id);
@@ -286,11 +299,18 @@ create or replace package body google_drive_pkg as
     if not l_is_list_function_result_correct then
       l_is_list_function_result_correct := f_list_images_by_parent_folder(pi_folder_id => l_parent_folder_id);
     end if;
+
+    if not l_is_list_function_result_correct then
+      raise e_api_endpoint_call_failed;
+    end if;
   exception
+    -- TODO another exception: another session is getting the new token, try again in a while
     when e_token_endpoint_call_error then
       p_add_apex_error(pi_message => 'There is an error when getting the access token.');
     when e_api_endpoint_call_error then
-      p_add_apex_error(pi_message => 'There is an error when calling the Google API.');
+      p_add_apex_error(pi_message => 'There is an error when calling the Google API (non 401).');
+    when e_api_endpoint_call_failed then
+      p_add_apex_error(pi_message => 'There is an error when calling the Google API (2nd attempt).');
     when others then
       p_add_apex_error(pi_message => 'There is an unexpected error: ' || sqlerrm); 
       raise;

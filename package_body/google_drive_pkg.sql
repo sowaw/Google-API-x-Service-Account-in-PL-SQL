@@ -1,8 +1,6 @@
 create or replace package body google_drive_pkg as
 
 -- CONSTANTS
-  c_google_access_token_coll_name constant varchar2(50) := 'GOOGLE_API_ACCESS_TOKEN';
-
   c_encryption_type constant pls_integer := dbms_crypto.encrypt_aes256 + 
                                             dbms_crypto.chain_cbc + 
                                             dbms_crypto.pad_pkcs5;  

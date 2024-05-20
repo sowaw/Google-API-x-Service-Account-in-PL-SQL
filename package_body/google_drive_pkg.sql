@@ -235,6 +235,7 @@ create or replace package body google_drive_pkg as
   function f_get_access_token(pi_must_get_new_token boolean default false)
   return varchar2
   is
+  pragma autonomous_transaction;
     c_google_api_service_account_email constant varchar2(4000) := 'rewild-earth-service-account@rewildearth.iam.gserviceaccount.com';
     c_google_api_scopes                constant varchar2(4000) := 'https://www.googleapis.com/auth/drive.metadata.readonly';
     c_google_api_token_endpoint        constant varchar2(4000) := 'https://oauth2.googleapis.com/token';
@@ -502,6 +503,132 @@ create or replace package body google_drive_pkg as
       p_add_apex_error(pi_message => 'There is an unexpected error: ' || sqlerrm); 
       raise;
   end p_get_before_and_after_images;
+
+  function f_get_file_list_for_counts (
+    pi_root_folder_url in varchar2 default 'https://drive.google.com/drive/folders/16-r6rkahOyiBbEzfAdA-ilSSebmuPSPr',
+    pi_year            in varchar2
+  ) 
+  return events_ntt pipelined
+  is
+    l_root_folder_id     varchar2(50);
+    l_access_token       varchar2(4000);
+    l_list_files_api_url varchar2(4000);
+    l_clob               clob;
+    l_event              event_rt;
+
+    l_location_folder_parent_ids apex_t_varchar2;
+    l_parent_folder_expr varchar2(4000);
+    l_parents apex_t_varchar2;
+
+    l_location_folders_nt location_folders_ntt;
+    l_event_folders_nt event_folders_ntt;
+
+    l_event_created_time_tmstp timestamp;
+  begin
+    l_root_folder_id := f_extract_folder_id_from_url(pi_url => pi_root_folder_url);
+
+    l_access_token := f_get_access_token(pi_must_get_new_token => true);
+
+    -- call the api to list files
+    apex_web_service.g_request_headers.delete;
+    apex_web_service.g_request_headers(1).name := 'Authorization';
+    apex_web_service.g_request_headers(1).value := l_access_token;
+
+    l_list_files_api_url := 
+      'https://www.googleapis.com/drive/v3/files?' ||
+      chr(38) ||
+      'q=''' || l_root_folder_id || ''' in parents and trashed=false and mimeType=''application/vnd.google-apps.folder''' ||
+      chr(38) ||
+      'fields=incompleteSearch,nextPageToken,files(id,name)'
+      ;
+
+    l_clob := apex_web_service.make_rest_request(
+      p_url         => l_list_files_api_url,
+      p_http_method => 'GET'
+    );
+
+    if apex_web_service.g_status_code = 200 then
+      l_location_folders_nt := location_folders_ntt();
+      apex_json.parse(l_clob);
+
+      for i in 1..apex_json.get_count(p_path => 'files') loop
+        l_location_folders_nt.extend();
+        l_location_folders_nt(l_location_folders_nt.last) := location_folder_rt(
+          apex_json.get_varchar2('files[%d].name', i),
+          apex_json.get_varchar2('files[%d].id', i)
+        );
+
+        apex_string.push(
+          p_table => l_location_folder_parent_ids,
+          p_value => '''' || apex_json.get_varchar2('files[%d].id', i) || ''' in parents'
+        );
+      end loop;
+    end if;
+
+    logger.log(l_location_folders_nt.count);
+
+    l_parent_folder_expr := apex_string.join(
+      p_table => l_location_folder_parent_ids,
+      p_sep   => ' or '
+    );
+
+    l_list_files_api_url := 
+      'https://www.googleapis.com/drive/v3/files?' ||
+      chr(38) ||
+      'q=(' || l_parent_folder_expr || ') and trashed=false and mimeType=''application/vnd.google-apps.folder''' ||
+      chr(38) ||
+      'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime)' ||
+      chr(38) ||
+      'pageSize=1000'
+      ;
+
+    l_clob := apex_web_service.make_rest_request(
+      p_url         => l_list_files_api_url,
+      p_http_method => 'GET'
+    );
+
+    if apex_web_service.g_status_code = 200 then
+      l_event_folders_nt := event_folders_ntt();
+      apex_json.parse(l_clob);
+
+      for i in 1..apex_json.get_count(p_path => 'files') loop
+        l_event_folders_nt.extend();
+
+        l_parents := apex_json.get_t_varchar2('files[%d].parents', i);
+
+        l_event_created_time_tmstp := to_timestamp(apex_json.get_varchar2('files[%d].createdTime', i), 'yyyy-mm-dd"T"hh24:mi:ss.FF3"Z"');
+
+        l_event_folders_nt(l_event_folders_nt.count) := event_folder_rt(
+          apex_json.get_varchar2('files[%d].name', i),
+          l_parents(l_parents.first),
+          l_event_created_time_tmstp,
+          to_char(l_event_created_time_tmstp, 'yyyy')
+        );
+      end loop;      
+    end if;
+
+    for rec in (
+      select l.name         as location,
+             e.name         as event,
+             e.created_time
+        from table(l_location_folders_nt) l
+        join table(l_event_folders_nt) e
+          on l.id = e.parent_id
+       where l.name <> '.Annual Summaries'
+         and e.created_year = pi_year
+    ) loop
+      pipe row(event_rt(
+        rec.location,
+        rec.event,
+        rec.created_time
+      ));
+    end loop;   
+
+  exception
+    when others then
+      raise;
+  end f_get_file_list_for_counts;
+
 
 end google_drive_pkg;
 /

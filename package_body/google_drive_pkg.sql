@@ -408,7 +408,7 @@ create or replace package body google_drive_pkg as
       chr(38) ||
       'q=''' || pi_folder_id || ''' in parents and trashed=false' ||
       chr(38) ||
-      'fields=files(id,name)'
+      'fields=incompleteSearch,nextPageToken,files(id,name)'
       ;
 
     l_clob := apex_web_service.make_rest_request(
@@ -513,6 +513,7 @@ create or replace package body google_drive_pkg as
     l_root_folder_id     varchar2(50);
     l_access_token       varchar2(4000);
     l_list_files_api_url varchar2(4000);
+    l_list_files_api_target_url varchar2(4000);
     l_clob               clob;
     l_event              event_rt;
 
@@ -524,6 +525,9 @@ create or replace package body google_drive_pkg as
     l_event_folders_nt event_folders_ntt;
 
     l_event_created_time_tmstp timestamp;
+
+    l_incomplete_call boolean;
+    l_next_page_token varchar2(4000);
   begin
     l_root_folder_id := f_extract_folder_id_from_url(pi_url => pi_root_folder_url);
 
@@ -563,49 +567,81 @@ create or replace package body google_drive_pkg as
           p_value => '''' || apex_json.get_varchar2('files[%d].id', i) || ''' in parents'
         );
       end loop;
+    else
+      null;
+      -- TODO raise exception here
     end if;
-
-    logger.log(l_location_folders_nt.count);
 
     l_parent_folder_expr := apex_string.join(
       p_table => l_location_folder_parent_ids,
       p_sep   => ' or '
     );
 
+    l_incomplete_call := true;
+    l_next_page_token := null;
+    l_event_folders_nt := event_folders_ntt();
+
     l_list_files_api_url := 
-      'https://www.googleapis.com/drive/v3/files?' ||
-      chr(38) ||
-      'q=(' || l_parent_folder_expr || ') and trashed=false and mimeType=''application/vnd.google-apps.folder''' ||
-      chr(38) ||
-      'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime)' ||
-      chr(38) ||
-      'pageSize=1000'
-      ;
+            'https://www.googleapis.com/drive/v3/files?' ||
+            chr(38) ||
+            'q=(' || l_parent_folder_expr || ') and trashed=false and mimeType=''application/vnd.google-apps.folder''' ||
+            chr(38) ||
+            'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime)' ||
+            chr(38) ||
+            'pageSize=100'
+            ;
 
-    l_clob := apex_web_service.make_rest_request(
-      p_url         => l_list_files_api_url,
-      p_http_method => 'GET'
-    );
+    while l_incomplete_call loop
+      l_list_files_api_target_url := 
+        case
+          when l_next_page_token is not null then
+            l_list_files_api_url || chr(38) || 'pageToken=' || l_next_page_token
+          else
+            l_list_files_api_url
+        end;
 
-    if apex_web_service.g_status_code = 200 then
-      l_event_folders_nt := event_folders_ntt();
-      apex_json.parse(l_clob);
+      l_clob := apex_web_service.make_rest_request(
+        p_url         => l_list_files_api_target_url,
+        p_http_method => 'GET'
+      );
 
-      for i in 1..apex_json.get_count(p_path => 'files') loop
-        l_event_folders_nt.extend();
+      if apex_web_service.g_status_code = 200 then
+        apex_json.parse(l_clob);
 
-        l_parents := apex_json.get_t_varchar2('files[%d].parents', i);
+        for i in 1..apex_json.get_count(p_path => 'files') loop
+          l_event_folders_nt.extend();
 
-        l_event_created_time_tmstp := to_timestamp(apex_json.get_varchar2('files[%d].createdTime', i), 'yyyy-mm-dd"T"hh24:mi:ss.FF3"Z"');
+          l_parents := apex_json.get_t_varchar2('files[%d].parents', i);
 
-        l_event_folders_nt(l_event_folders_nt.count) := event_folder_rt(
-          apex_json.get_varchar2('files[%d].name', i),
-          l_parents(l_parents.first),
-          l_event_created_time_tmstp,
-          to_char(l_event_created_time_tmstp, 'yyyy')
-        );
-      end loop;      
-    end if;
+          l_event_created_time_tmstp := to_timestamp(apex_json.get_varchar2('files[%d].createdTime', i), 'yyyy-mm-dd"T"hh24:mi:ss.FF3"Z"');
+
+          l_event_folders_nt(l_event_folders_nt.last) := event_folder_rt(
+            apex_json.get_varchar2('files[%d].name', i),
+            l_parents(l_parents.first),
+            l_event_created_time_tmstp,
+            to_char(l_event_created_time_tmstp, 'yyyy')
+          );
+        end loop;
+
+        -- if l_incomplete_call = 'true' then logger.log('l_incomplete_call true'); else logger.log('l_incomplete_call false'); end if;
+        l_next_page_token := apex_json.get_varchar2('nextPageToken');
+        l_incomplete_call :=
+          case
+            when l_next_page_token is not null then
+              true
+            else
+              false
+          end;
+        -- logger.log(l_next_page_token);
+
+        logger.log('total count is = ' || l_event_folders_nt.count);
+
+      else
+        null;
+        -- TODO raise exception here
+      end if;      
+
+    end loop;
 
     for rec in (
       select l.name         as location,
@@ -616,6 +652,7 @@ create or replace package body google_drive_pkg as
           on l.id = e.parent_id
        where l.name <> '.Annual Summaries'
          and e.created_year = pi_year
+        --  check the name like this [0-9]{4}-[0-9]{2}-[0-9]{2}
     ) loop
       pipe row(event_rt(
         rec.location,

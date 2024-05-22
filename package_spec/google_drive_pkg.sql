@@ -2,23 +2,23 @@ create or replace package google_drive_pkg as
 
   type event_rt is record (
     location     varchar2(2000),
-    event_name   varchar2(2000),
+    event_name   varchar2(4000),
     created_time timestamp
   );
 
   type events_ntt is table of event_rt;
 
   type location_folder_rt is record (
-    name varchar2(100),
+    name varchar2(500),
     id   varchar2(500)
   );
 
   type location_folders_ntt is table of location_folder_rt;  
 
   type event_folder_rt is record (
-    name         varchar2(100),
+    name         varchar2(500),
     parent_id    varchar2(500),
-    created_time varchar2(100),
+    created_time timestamp,
     created_year varchar2(4)
   );
     

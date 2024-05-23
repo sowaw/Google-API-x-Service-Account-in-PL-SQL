@@ -2,27 +2,30 @@ create or replace package google_drive_pkg as
 
   type event_rt is record (
     location     varchar2(2000),
+    year         varchar2(2000),
     event_name   varchar2(4000),
     created_time timestamp
   );
 
   type events_ntt is table of event_rt;
 
-  type location_folder_rt is record (
-    name varchar2(500),
-    id   varchar2(500)
-  );
-
-  type location_folders_ntt is table of location_folder_rt;  
-
-  type event_folder_rt is record (
+  type folder_rt is record (
+    id           varchar2(500),
     name         varchar2(500),
     parent_id    varchar2(500),
     created_time timestamp,
     created_year varchar2(4)
   );
     
-  type event_folders_ntt is table of event_folder_rt;  
+  type folders_ntt is table of folder_rt;
+
+  type call_result is record (
+    is_success      boolean,
+    folders_nt      folders_ntt,
+    parent_id_exprs apex_t_varchar2,
+    code_unit       varchar2(500),
+    error_message   varchar2(4000)
+  );
 
   procedure p_get_before_and_after_images(
     pi_image_folder in varchar2

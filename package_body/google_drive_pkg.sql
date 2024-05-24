@@ -459,6 +459,233 @@ create or replace package body google_drive_pkg as
       raise;
   end f_list_images_by_parent_folder;
 
+  function f_get_files_by_parents (
+    pi_parents_expression in varchar2,
+    pi_access_token       in varchar2,
+    pi_year_folder_name   in varchar2 default null
+  )
+  return call_result
+  is
+    l_clob                      clob;
+    l_list_files_api_url        varchar2(32000);
+    l_list_files_api_target_url varchar2(32000);
+    l_parents                   apex_t_varchar2;
+    l_created_time_tmstp        timestamp;
+    l_return                    call_result;
+    l_element_counter           number := 0;
+
+    l_incomplete_call boolean;
+    l_next_page_token varchar2(4000);
+  begin
+    apex_web_service.g_request_headers.delete;
+    apex_web_service.g_request_headers(1).name  := 'Authorization';
+    apex_web_service.g_request_headers(1).value := pi_access_token;
+
+    l_incomplete_call   := true;
+    l_next_page_token   := null;
+    l_return.folders_nt := folders_ntt();
+
+    l_list_files_api_url := 
+      'https://www.googleapis.com/drive/v3/files?' ||
+      chr(38) ||
+      'q=(' || pi_parents_expression || ') and trashed=false and mimeType=''application/vnd.google-apps.folder''' ||
+      chr(38) ||
+      'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime)' ||
+      chr(38) ||
+      'pageSize=1000' ||
+      case 
+        when pi_year_folder_name is not null then
+          chr(38) || 'name=''' || trim(pi_year_folder_name) || ''''
+        else
+          null
+      end
+      ;
+
+    while l_incomplete_call loop
+      l_list_files_api_target_url := 
+        case
+          when l_next_page_token is not null then
+            l_list_files_api_url || chr(38) || 'pageToken=' || l_next_page_token
+          else
+            l_list_files_api_url
+        end;
+
+      l_clob := apex_web_service.make_rest_request(
+        p_url         => l_list_files_api_target_url,
+        p_http_method => 'GET'
+      );
+      
+      if apex_web_service.g_status_code = 200 then
+        apex_json.parse(l_clob);
+
+        l_return.folders_nt.extend(apex_json.get_count(p_path => 'files'));
+
+        for i in 1..apex_json.get_count(p_path => 'files') loop
+          l_parents := apex_json.get_t_varchar2('files[%d].parents', i);
+
+          l_created_time_tmstp := to_timestamp(apex_json.get_varchar2('files[%d].createdTime', i), 'yyyy-mm-dd"T"hh24:mi:ss.FF3"Z"');
+
+          l_return.folders_nt(l_element_counter + i) := folder_rt(
+            apex_json.get_varchar2('files[%d].id', i),
+            apex_json.get_varchar2('files[%d].name', i),
+            l_parents(l_parents.first),
+            l_created_time_tmstp
+          );
+
+        end loop;
+
+        l_element_counter := l_element_counter + apex_json.get_count(p_path => 'files');
+
+        l_next_page_token := apex_json.get_varchar2('nextPageToken');
+        l_incomplete_call :=
+          case
+            when l_next_page_token is not null then
+              true
+            else
+              false
+          end;
+
+      else -- non-200 http status code
+        l_return.is_success := false;
+        l_return.code_unit   := 'Error when getting event folders from Google Drive API.';
+        l_return.error_message := substr(l_clob, 1, 4000);
+
+        return l_return;
+      end if;              
+
+    end loop;
+
+    l_return.is_success := true;
+
+    return l_return;
+
+  exception
+    when others then
+      l_return.is_success := false;
+      l_return.code_unit := 'f_get_files_by_parents';
+      l_return.error_message := sqlerrm;
+
+      return l_return;
+  end f_get_files_by_parents;
+
+  function f_get_filtered_location_folders(
+    pi_folders_nt in folders_ntt
+  ) 
+  return call_result
+  is
+    l_return          call_result;
+    l_parent_id_exprs apex_t_varchar2;
+  begin
+    select *
+      bulk collect into l_return.folders_nt
+      from table(pi_folders_nt) t
+     where trim(t.name) not in 
+     (
+      '.Annual Summaries',
+      'Resources',
+      'Species',
+      'Volunteer Interviews'
+     );    
+
+    for i in 1..l_return.folders_nt.count loop
+      apex_string.push(
+        p_table => l_parent_id_exprs,
+        p_value => '''' || l_return.folders_nt(i).id || ''' in parents'
+      );
+    end loop;
+
+    l_return.parent_id_expr := apex_string.join(
+      p_table => l_parent_id_exprs,
+      p_sep   => ' or '
+    );
+
+    l_return.is_success := true;
+
+    return l_return;
+  exception
+    when others then
+      l_return.is_success := false;
+      l_return.code_unit := 'f_get_filtered_location_folders';
+      l_return.error_message := sqlerrm;
+
+      return l_return;
+  end f_get_filtered_location_folders;
+
+  function f_get_filtered_year_folders(
+    pi_folders_nt  in folders_ntt,
+    pi_year        in varchar2
+  ) 
+  return call_result
+  is
+    l_return          call_result;
+    l_parent_id_exprs apex_t_varchar2;
+  begin
+    select *
+      bulk collect into l_return.folders_nt
+      from table(pi_folders_nt) t
+     where trim(t.name) = pi_year;
+
+    for i in 1..l_return.folders_nt.count loop
+      apex_string.push(
+        p_table => l_parent_id_exprs,
+        p_value => '''' || l_return.folders_nt(i).id || ''' in parents'
+      );
+    end loop;
+
+    l_return.parent_id_expr := apex_string.join(
+      p_table => l_parent_id_exprs,
+      p_sep   => ' or '
+    );
+
+    l_return.is_success := true;
+
+    return l_return;
+  exception
+    when others then
+      l_return.is_success := false;
+      l_return.code_unit := 'f_get_filtered_year_folders';
+      l_return.error_message := sqlerrm;
+
+      return l_return;
+  end f_get_filtered_year_folders;  
+
+  function f_get_filtered_event_folders(
+    pi_folders_nt in folders_ntt
+  ) 
+  return call_result
+  is
+    l_return          call_result;
+    l_parent_id_exprs apex_t_varchar2;
+  begin
+    select *
+      bulk collect into l_return.folders_nt
+      from table(pi_folders_nt) t
+     where regexp_like(t.name, '^[0-9]{4}-[0-9]{2}-[0-9]{2}.*');
+
+    for i in 1..l_return.folders_nt.count loop
+      apex_string.push(
+        p_table => l_parent_id_exprs,
+        p_value => '''' || l_return.folders_nt(i).id || ''' in parents'
+      );
+    end loop;
+
+    l_return.parent_id_expr := apex_string.join(
+      p_table => l_parent_id_exprs,
+      p_sep   => ' or '
+    );    
+
+    l_return.is_success := true;
+
+    return l_return;
+  exception
+    when others then
+      l_return.is_success := false;
+      l_return.code_unit := 'f_get_filtered_event_folders';
+      l_return.error_message := sqlerrm;
+
+      return l_return;
+  end f_get_filtered_event_folders;    
+
 
 -- PUBLIC PROCEDURES AND FUNCTIONS
   procedure p_get_before_and_after_images(pi_image_folder in varchar2)
@@ -506,214 +733,7 @@ create or replace package body google_drive_pkg as
     when others then
       p_add_apex_error(pi_message => 'There is an unexpected error: ' || sqlerrm); 
       raise;
-  end p_get_before_and_after_images;
-
-  function f_get_files_by_parents (
-    pi_parents_expression in varchar2,
-    pi_access_token       in varchar2
-  )
-  return call_result
-  is
-    l_clob clob;
-    l_list_files_api_url        varchar2(32000);
-    l_list_files_api_target_url varchar2(32000);
-    l_parents                    apex_t_varchar2;
-    l_created_time_tmstp timestamp;
-    l_return call_result;
-    l_element_counter number := 0;
-
-    l_incomplete_call boolean;
-    l_next_page_token varchar2(4000);
-  begin
-    apex_web_service.g_request_headers.delete;
-    apex_web_service.g_request_headers(1).name := 'Authorization';
-    apex_web_service.g_request_headers(1).value := pi_access_token;
-
-    l_incomplete_call := true;
-    l_next_page_token := null;
-    l_return.folders_nt := folders_ntt();
-
-    l_list_files_api_url := 
-      'https://www.googleapis.com/drive/v3/files?' ||
-      chr(38) ||
-      'q=(' || pi_parents_expression || ') and trashed=false and mimeType=''application/vnd.google-apps.folder''' ||
-      chr(38) ||
-      'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime)' ||
-      chr(38) ||
-      'pageSize=1000'
-      ;
-
-    while l_incomplete_call loop
-      l_list_files_api_target_url := 
-        case
-          when l_next_page_token is not null then
-            l_list_files_api_url || chr(38) || 'pageToken=' || l_next_page_token
-          else
-            l_list_files_api_url
-        end;
-
-      l_clob := apex_web_service.make_rest_request(
-        p_url         => l_list_files_api_target_url,
-        p_http_method => 'GET'
-      );
-      
-      if apex_web_service.g_status_code = 200 then
-        apex_json.parse(l_clob);
-
-        l_return.folders_nt.extend(apex_json.get_count(p_path => 'files'));
-
-        for i in 1..apex_json.get_count(p_path => 'files') loop
-          l_parents := apex_json.get_t_varchar2('files[%d].parents', i);
-
-          l_created_time_tmstp := to_timestamp(apex_json.get_varchar2('files[%d].createdTime', i), 'yyyy-mm-dd"T"hh24:mi:ss.FF3"Z"');
-
-          l_return.folders_nt(l_element_counter + i) := folder_rt(
-            apex_json.get_varchar2('files[%d].id', i),
-            apex_json.get_varchar2('files[%d].name', i),
-            l_parents(l_parents.first),
-            l_created_time_tmstp,
-            to_char(l_created_time_tmstp, 'yyyy')
-          );
-
-          apex_string.push(
-            p_table => l_return.parent_id_exprs,
-            p_value => '''' || apex_json.get_varchar2('files[%d].id', i) || ''' in parents'
-          );
-        end loop;
-
-        l_element_counter := l_element_counter + apex_json.get_count(p_path => 'files');
-
-        l_next_page_token := apex_json.get_varchar2('nextPageToken');
-        l_incomplete_call :=
-          case
-            when l_next_page_token is not null then
-              true
-            else
-              false
-          end;
-
-      else -- non-200 http status code
-        l_return.is_success := false;
-        l_return.code_unit   := 'Error when getting event folders from Google Drive API.';
-        l_return.error_message := substr(l_clob, 1, 4000);
-
-        return l_return;
-      end if;              
-
-    end loop;
-
-    l_return.is_success := true;
-
-    return l_return;
-
-  exception
-    when others then
-      l_return.is_success := false;
-      l_return.code_unit := 'f_get_files_by_parents';
-      l_return.error_message := sqlerrm;
-
-      return l_return;
-  end f_get_files_by_parents;
-
-  function f_get_filtered_location_folders(
-    pi_folders_nt in folders_ntt
-  ) 
-  return call_result
-  is
-    l_return call_result;
-  begin
-    select *
-      bulk collect into l_return.folders_nt
-      from table(pi_folders_nt) t
-     where trim(t.name) not in 
-     (
-      '.Annual Summaries',
-      'Resources',
-      'Species',
-      'Volunteer Interviews'
-     );    
-
-    for i in 1..l_return.folders_nt.count loop
-      apex_string.push(
-        p_table => l_return.parent_id_exprs,
-        p_value => '''' || l_return.folders_nt(i).id || ''' in parents'
-      );
-    end loop;
-
-    l_return.is_success := true;
-
-    return l_return;
-  exception
-    when others then
-      l_return.is_success := false;
-      l_return.code_unit := 'f_get_filtered_location_folders';
-      l_return.error_message := sqlerrm;
-
-      return l_return;
-  end f_get_filtered_location_folders;
-
-  function f_get_filtered_year_folders(
-    pi_folders_nt in folders_ntt,
-    pi_year       in varchar2
-  ) 
-  return call_result
-  is
-    l_return call_result;
-  begin
-    select *
-      bulk collect into l_return.folders_nt
-      from table(pi_folders_nt) t
-     where trim(t.name) = pi_year;
-
-    for i in 1..l_return.folders_nt.count loop
-      apex_string.push(
-        p_table => l_return.parent_id_exprs,
-        p_value => '''' || l_return.folders_nt(i).id || ''' in parents'
-      );
-    end loop;
-
-    l_return.is_success := true;
-
-    return l_return;
-  exception
-    when others then
-      l_return.is_success := false;
-      l_return.code_unit := 'f_get_filtered_year_folders';
-      l_return.error_message := sqlerrm;
-
-      return l_return;
-  end f_get_filtered_year_folders;  
-
-  function f_get_filtered_event_folders(
-    pi_folders_nt in folders_ntt
-  ) 
-  return call_result
-  is
-    l_return call_result;
-  begin
-    select *
-      bulk collect into l_return.folders_nt
-      from table(pi_folders_nt) t
-     where regexp_like(t.name, '^[0-9]{4}-[0-9]{2}-[0-9]{2}.*');
-
-    for i in 1..l_return.folders_nt.count loop
-      apex_string.push(
-        p_table => l_return.parent_id_exprs,
-        p_value => '''' || l_return.folders_nt(i).id || ''' in parents'
-      );
-    end loop;
-
-    l_return.is_success := true;
-
-    return l_return;
-  exception
-    when others then
-      l_return.is_success := false;
-      l_return.code_unit := 'f_get_filtered_event_folders';
-      l_return.error_message := sqlerrm;
-
-      return l_return;
-  end f_get_filtered_event_folders;   
+  end p_get_before_and_after_images; 
 
   function f_get_file_list_for_counts (
     pi_root_folder_url in varchar2 default 'https://drive.google.com/drive/folders/16-r6rkahOyiBbEzfAdA-ilSSebmuPSPr',
@@ -721,18 +741,18 @@ create or replace package body google_drive_pkg as
   ) 
   return events_ntt pipelined
   is
-    l_root_folder_id            varchar2(50);
-    l_access_token              varchar2(4000);
-    l_parents_expr              varchar2(32000);
+    l_root_folder_id       varchar2(50);
+    l_access_token         varchar2(4000);
+    l_parents_expr         varchar2(32000);
 
-    l_error_to_raise  event_rt;
+    l_error_to_raise       event_rt;
 
     l_location_call_result call_result;
     l_year_call_result     call_result;
     l_event_call_result    call_result;
 
-    l_code_unit     varchar2(500);
-    l_error_message varchar2(4000);
+    l_code_unit            varchar2(500);
+    l_error_message        varchar2(4000);
   begin
     l_root_folder_id := f_extract_folder_id_from_url(pi_url => pi_root_folder_url);
 
@@ -765,14 +785,11 @@ create or replace package body google_drive_pkg as
     end if;    
 
     -- STEP 2.
-    l_parents_expr := apex_string.join(
-      p_table => l_location_call_result.parent_id_exprs,
-      p_sep   => ' or '
-    );
 
     l_year_call_result := f_get_files_by_parents(
-      pi_parents_expression => l_parents_expr,
-      pi_access_token       => l_access_token
+      pi_parents_expression => l_location_call_result.parent_id_expr,
+      pi_access_token       => l_access_token,
+      pi_year_folder_name   => pi_year
     );
 
     if not l_year_call_result.is_success then
@@ -794,14 +811,10 @@ create or replace package body google_drive_pkg as
       raise e_getting_counts_error;
     end if;     
 
-    -- STEP 3.
-    l_parents_expr := apex_string.join(
-      p_table => l_year_call_result.parent_id_exprs,
-      p_sep   => ' or '
-    );  
+    -- STEP 3.  
 
     l_event_call_result := f_get_files_by_parents(
-      pi_parents_expression => l_parents_expr,
+      pi_parents_expression => l_year_call_result.parent_id_expr,
       pi_access_token       => l_access_token
     );
 

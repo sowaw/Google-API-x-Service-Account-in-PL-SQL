@@ -3,7 +3,7 @@ create or replace package google_drive_pkg as
   type event_rt is record (
     location     varchar2(2000),
     year         varchar2(2000),
-    event_name   varchar2(4000),
+    event_name   varchar2(2000),
     created_time timestamp
   );
 
@@ -13,8 +13,7 @@ create or replace package google_drive_pkg as
     id           varchar2(500),
     name         varchar2(500),
     parent_id    varchar2(500),
-    created_time timestamp,
-    created_year varchar2(4)
+    created_time timestamp
   );
     
   type folders_ntt is table of folder_rt;
@@ -22,7 +21,7 @@ create or replace package google_drive_pkg as
   type call_result is record (
     is_success      boolean,
     folders_nt      folders_ntt,
-    parent_id_exprs apex_t_varchar2,
+    parent_id_expr  varchar2(32000),
     code_unit       varchar2(500),
     error_message   varchar2(4000)
   );

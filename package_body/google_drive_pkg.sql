@@ -48,8 +48,8 @@ create or replace package body google_drive_pkg as
     when others then
       apex_debug.error(
         p_message => 'Error in code unit: %s. %s',
-        p0 => 'p_add_apex_error',
-        p1 => sqlerrm
+        p0        => 'p_add_apex_error',
+        p1        => sqlerrm
       );
 
       raise;
@@ -84,8 +84,8 @@ create or replace package body google_drive_pkg as
     when others then
       apex_debug.error(
         p_message => 'Error in code unit: %s. %s',
-        p0 => 'f_get_service_account_private_key',
-        p1 => sqlerrm
+        p0        => 'f_get_service_account_private_key',
+        p1        => sqlerrm
       );    
 
       raise;
@@ -103,8 +103,8 @@ create or replace package body google_drive_pkg as
     when others then
       apex_debug.error(
         p_message => 'Error in code unit: %s. %s',
-        p0 => 'f_extract_folder_id_from_url',
-        p1 => sqlerrm
+        p0        => 'f_extract_folder_id_from_url',
+        p1        => sqlerrm
       );   
 
       raise;
@@ -144,8 +144,8 @@ create or replace package body google_drive_pkg as
     when others then
       apex_debug.error(
         p_message => 'Error in code unit: %s. %s',
-        p0 => 'p_store_access_token',
-        p1 => sqlerrm
+        p0        => 'p_store_access_token',
+        p1        => sqlerrm
       );    
 
       raise;
@@ -187,8 +187,8 @@ create or replace package body google_drive_pkg as
     when others then
       apex_debug.error(
         p_message => 'Error in code unit: %s. %s',
-        p0 => 'f_get_access_token_from_storage',
-        p1 => sqlerrm
+        p0        => 'f_get_access_token_from_storage',
+        p1        => sqlerrm
       );
 
       raise;
@@ -208,8 +208,8 @@ create or replace package body google_drive_pkg as
     when others then
       apex_debug.error(
         p_message => 'Error in code unit: %s. %s',
-        p0 => 'p_lock_token_row',
-        p1 => sqlerrm
+        p0        => 'p_lock_token_row',
+        p1        => sqlerrm
       );
 
       raise;    
@@ -229,8 +229,8 @@ create or replace package body google_drive_pkg as
     when others then
       apex_debug.error(
         p_message => 'Error in code unit: %s. %s',
-        p0 => 'p_unlock_token_row',
-        p1 => sqlerrm
+        p0        => 'p_unlock_token_row',
+        p1        => sqlerrm
       );
 
       raise;    
@@ -348,8 +348,8 @@ create or replace package body google_drive_pkg as
     when others then
       apex_debug.error(
         p_message => 'Error in code unit: %s. %s',
-        p0 => 'f_get_access_token',
-        p1 => sqlerrm
+        p0        => 'f_get_access_token',
+        p1        => sqlerrm
       );   
 
       p_unlock_token_row;
@@ -452,8 +452,8 @@ create or replace package body google_drive_pkg as
     when others then
       apex_debug.error(
         p_message => 'Error in code unit: %s. %s',
-        p0 => 'f_list_images_by_parent_folder',
-        p1 => sqlerrm
+        p0        => 'f_list_images_by_parent_folder',
+        p1        => sqlerrm
       );    
 
       raise;
@@ -561,6 +561,12 @@ create or replace package body google_drive_pkg as
 
   exception
     when others then
+      apex_debug.error(
+        p_message => 'Error in code unit: %s. %s',
+        p0        => 'f_get_files_by_parents',
+        p1        => sqlerrm
+      );
+
       l_return.is_success := false;
       l_return.code_unit := 'f_get_files_by_parents';
       l_return.error_message := sqlerrm;
@@ -604,6 +610,12 @@ create or replace package body google_drive_pkg as
     return l_return;
   exception
     when others then
+      apex_debug.error(
+        p_message => 'Error in code unit: %s. %s',
+        p0        => 'f_get_filtered_location_folders',
+        p1        => sqlerrm
+      );
+
       l_return.is_success := false;
       l_return.code_unit := 'f_get_filtered_location_folders';
       l_return.error_message := sqlerrm;
@@ -623,7 +635,7 @@ create or replace package body google_drive_pkg as
     select *
       bulk collect into l_return.folders_nt
       from table(pi_folders_nt) t
-     where trim(t.name) = pi_year;
+      where t.name = nvl(pi_year, t.name);
 
     for i in 1..l_return.folders_nt.count loop
       apex_string.push(
@@ -636,12 +648,21 @@ create or replace package body google_drive_pkg as
       p_table => l_parent_id_exprs,
       p_sep   => ' or '
     );
+    -- this can be too long for vc2 in future
+    -- log current length and test it
+    -- if does not work, split the array and iterate using batches
 
     l_return.is_success := true;
 
     return l_return;
   exception
     when others then
+      apex_debug.error(
+        p_message => 'Error in code unit: %s. %s',
+        p0        => 'f_get_filtered_year_folders',
+        p1        => sqlerrm
+      );
+
       l_return.is_success := false;
       l_return.code_unit := 'f_get_filtered_year_folders';
       l_return.error_message := sqlerrm;
@@ -660,25 +681,19 @@ create or replace package body google_drive_pkg as
     select *
       bulk collect into l_return.folders_nt
       from table(pi_folders_nt) t
-     where regexp_like(t.name, '^[0-9]{4}-[0-9]{2}-[0-9]{2}.*');
-
-    for i in 1..l_return.folders_nt.count loop
-      apex_string.push(
-        p_table => l_parent_id_exprs,
-        p_value => '''' || l_return.folders_nt(i).id || ''' in parents'
-      );
-    end loop;
-
-    l_return.parent_id_expr := apex_string.join(
-      p_table => l_parent_id_exprs,
-      p_sep   => ' or '
-    );    
+     where regexp_like(t.name, '^[0-9]{4}-[0-9]{2}-[0-9]{2}.*');   
 
     l_return.is_success := true;
 
     return l_return;
   exception
     when others then
+      apex_debug.error(
+        p_message => 'Error in code unit: %s. %s',
+        p0        => 'f_get_filtered_event_folders',
+        p1        => sqlerrm
+      );
+
       l_return.is_success := false;
       l_return.code_unit := 'f_get_filtered_event_folders';
       l_return.error_message := sqlerrm;
@@ -737,7 +752,7 @@ create or replace package body google_drive_pkg as
 
   function f_get_file_list_for_counts (
     pi_root_folder_url in varchar2 default 'https://drive.google.com/drive/folders/16-r6rkahOyiBbEzfAdA-ilSSebmuPSPr',
-    pi_year            in varchar2
+    pi_year            in varchar2 default null
   ) 
   return events_ntt pipelined
   is
@@ -785,11 +800,10 @@ create or replace package body google_drive_pkg as
     end if;    
 
     -- STEP 2.
-
     l_year_call_result := f_get_files_by_parents(
       pi_parents_expression => l_location_call_result.parent_id_expr,
       pi_access_token       => l_access_token,
-      pi_year_folder_name   => pi_year
+      pi_year_folder_name   => null
     );
 
     if not l_year_call_result.is_success then
@@ -812,7 +826,8 @@ create or replace package body google_drive_pkg as
     end if;     
 
     -- STEP 3.  
-
+    -- potentially that's the place to split too long expression into batches - l_year_call_result.parent_id_expr
+    -- first, try clob instead
     l_event_call_result := f_get_files_by_parents(
       pi_parents_expression => l_year_call_result.parent_id_expr,
       pi_access_token       => l_access_token
@@ -869,6 +884,11 @@ create or replace package body google_drive_pkg as
         )
       );
     when others then
+      apex_debug.error(
+        p_message => 'Error in code unit: %s. %s',
+        p0        => 'f_get_file_list_for_counts',
+        p1        => sqlerrm
+      );    
       raise;
   end f_get_file_list_for_counts;
 

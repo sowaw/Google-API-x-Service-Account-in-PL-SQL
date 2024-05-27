@@ -32,7 +32,7 @@ create or replace package google_drive_pkg as
 
   function f_get_file_list_for_counts(
     pi_root_folder_url in varchar2 default 'https://drive.google.com/drive/folders/16-r6rkahOyiBbEzfAdA-ilSSebmuPSPr',
-    pi_year            in varchar2
+    pi_year            in varchar2 default null
   ) return events_ntt pipelined;
 
 end google_drive_pkg;

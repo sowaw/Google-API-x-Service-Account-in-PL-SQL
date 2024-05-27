@@ -593,18 +593,6 @@ create or replace package body google_drive_pkg as
       'Volunteer Interviews'
      );    
 
-    for i in 1..l_return.folders_nt.count loop
-      apex_string.push(
-        p_table => l_parent_id_exprs,
-        p_value => '''' || l_return.folders_nt(i).id || ''' in parents'
-      );
-    end loop;
-
-    l_return.parent_id_expr := apex_string.join(
-      p_table => l_parent_id_exprs,
-      p_sep   => ' or '
-    );
-
     l_return.is_success := true;
 
     return l_return;
@@ -636,21 +624,6 @@ create or replace package body google_drive_pkg as
       bulk collect into l_return.folders_nt
       from table(pi_folders_nt) t
       where t.name = nvl(pi_year, t.name);
-
-    for i in 1..l_return.folders_nt.count loop
-      apex_string.push(
-        p_table => l_parent_id_exprs,
-        p_value => '''' || l_return.folders_nt(i).id || ''' in parents'
-      );
-    end loop;
-
-    l_return.parent_id_expr := apex_string.join(
-      p_table => l_parent_id_exprs,
-      p_sep   => ' or '
-    );
-    -- this can be too long for vc2 in future
-    -- log current length and test it
-    -- if does not work, split the array and iterate using batches
 
     l_return.is_success := true;
 
@@ -699,7 +672,67 @@ create or replace package body google_drive_pkg as
       l_return.error_message := sqlerrm;
 
       return l_return;
-  end f_get_filtered_event_folders;    
+  end f_get_filtered_event_folders;
+
+  function f_get_batches_with_parent_id_exprs(
+    pi_parent_call_result in call_result
+  )
+  return parent_id_exprs_ntt
+  is
+    l_floor      number;
+    l_mod        number;
+    l_batch_size number := 500;
+    l_parent_ids apex_t_varchar2;  
+
+    l_return     parent_id_exprs_ntt := parent_id_exprs_ntt();
+  begin
+    l_floor := floor(pi_parent_call_result.folders_nt.count / l_batch_size);
+    l_mod   := mod(pi_parent_call_result.folders_nt.count, l_batch_size);
+
+    for i in 0..(l_floor - 1) loop
+      for j in (i * l_batch_size + 1)..(i * l_batch_size + l_batch_size) loop
+        apex_string.push(
+          p_table => l_parent_ids,
+          p_value => '''' || pi_parent_call_result.folders_nt(j).id || ''' in parents'
+        );
+      end loop;
+
+      l_return.extend();
+      l_return(l_return.last) := apex_string.join(
+        p_table => l_parent_ids,
+        p_sep   => ' or '
+      );
+
+      l_parent_ids.delete;
+    end loop;
+
+    if l_mod <> 0 then
+      for i in (l_floor * l_batch_size + 1)..pi_parent_call_result.folders_nt.count loop
+        apex_string.push(
+          p_table => l_parent_ids,
+          p_value => '''' || pi_parent_call_result.folders_nt(i).id || ''' in parents'
+        );
+      end loop;
+
+      l_return.extend();
+      l_return(l_return.last) := apex_string.join(
+        p_table => l_parent_ids,
+        p_sep   => ' or '
+      );      
+    end if;
+
+    l_parent_ids.delete;
+
+    return l_return;
+  exception
+    when others then
+      apex_debug.error(
+        p_message => 'Error in code unit: %s. %s',
+        p0        => 'f_get_batches_with_parent_id_exprs',
+        p1        => sqlerrm
+      );
+      raise;
+  end f_get_batches_with_parent_id_exprs;          
 
 
 -- PUBLIC PROCEDURES AND FUNCTIONS
@@ -760,20 +793,22 @@ create or replace package body google_drive_pkg as
     l_access_token         varchar2(4000);
     l_parents_expr         varchar2(32000);
 
-    l_error_to_raise       event_rt;
-
     l_location_call_result call_result;
     l_year_call_result     call_result;
     l_event_call_result    call_result;
 
     l_code_unit            varchar2(500);
     l_error_message        varchar2(4000);
+
+    l_parent_id_exprs_nt parent_id_exprs_ntt;
+    l_call_result call_result;
   begin
     l_root_folder_id := f_extract_folder_id_from_url(pi_url => pi_root_folder_url);
 
     l_access_token := f_get_access_token(pi_must_get_new_token => true);
 
     -- STEP 1.
+    -- no need to do the for-looping
     l_parents_expr := '''' || l_root_folder_id || '''' || ' in parents';
 
     l_location_call_result := f_get_files_by_parents(
@@ -800,18 +835,29 @@ create or replace package body google_drive_pkg as
     end if;    
 
     -- STEP 2.
-    l_year_call_result := f_get_files_by_parents(
-      pi_parents_expression => l_location_call_result.parent_id_expr,
-      pi_access_token       => l_access_token,
-      pi_year_folder_name   => null
+    -- get folders for which locations are parents
+    -- so there will be folders named YYYY
+    l_parent_id_exprs_nt := f_get_batches_with_parent_id_exprs(
+      pi_parent_call_result => l_location_call_result
     );
 
-    if not l_year_call_result.is_success then
-      l_code_unit     := l_year_call_result.code_unit;
-      l_error_message := l_year_call_result.error_message;
+    l_year_call_result.folders_nt := folders_ntt();
 
-      raise e_getting_counts_error;
-    end if;        
+    for i in 1..l_parent_id_exprs_nt.count loop
+      l_call_result := f_get_files_by_parents(
+        pi_parents_expression => l_parent_id_exprs_nt(i),
+        pi_access_token       => l_access_token  
+      );
+
+      if not l_call_result.is_success then
+        l_code_unit     := l_call_result.code_unit;
+        l_error_message := l_call_result.error_message;
+
+        raise e_getting_counts_error;
+      end if;
+
+      l_year_call_result.folders_nt := l_year_call_result.folders_nt multiset union l_call_result.folders_nt;     
+    end loop;        
 
     l_year_call_result := f_get_filtered_year_folders(
       pi_folders_nt => l_year_call_result.folders_nt,
@@ -825,20 +871,29 @@ create or replace package body google_drive_pkg as
       raise e_getting_counts_error;
     end if;     
 
-    -- STEP 3.  
-    -- potentially that's the place to split too long expression into batches - l_year_call_result.parent_id_expr
-    -- first, try clob instead
-    l_event_call_result := f_get_files_by_parents(
-      pi_parents_expression => l_year_call_result.parent_id_expr,
-      pi_access_token       => l_access_token
+    -- STEP 3.
+    -- get data about events
+    l_parent_id_exprs_nt := f_get_batches_with_parent_id_exprs(
+      pi_parent_call_result => l_year_call_result
     );
 
-    if not l_event_call_result.is_success then
-      l_code_unit     := l_event_call_result.code_unit;
-      l_error_message := l_event_call_result.error_message;
+    l_event_call_result.folders_nt := folders_ntt();
 
-      raise e_getting_counts_error;
-    end if;    
+    for i in 1..l_parent_id_exprs_nt.count loop
+      l_call_result := f_get_files_by_parents(
+        pi_parents_expression => l_parent_id_exprs_nt(i),
+        pi_access_token       => l_access_token  
+      );
+
+      if not l_call_result.is_success then
+        l_code_unit     := l_call_result.code_unit;
+        l_error_message := l_call_result.error_message;
+
+        raise e_getting_counts_error;
+      end if;
+
+      l_event_call_result.folders_nt := l_event_call_result.folders_nt multiset union l_call_result.folders_nt;     
+    end loop;   
 
     l_event_call_result := f_get_filtered_event_folders(
       pi_folders_nt => l_event_call_result.folders_nt

@@ -21,10 +21,11 @@ create or replace package google_drive_pkg as
   type call_result is record (
     is_success      boolean,
     folders_nt      folders_ntt,
-    parent_id_expr  varchar2(32000),
     code_unit       varchar2(500),
     error_message   varchar2(4000)
   );
+
+  type parent_id_exprs_ntt is table of varchar2(28000);
 
   procedure p_get_before_and_after_images(
     pi_image_folder in varchar2

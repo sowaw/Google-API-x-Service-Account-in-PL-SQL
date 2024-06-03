@@ -4,7 +4,8 @@ create or replace package google_drive_pkg as
     location     varchar2(2000),
     year         varchar2(2000),
     event_name   varchar2(2000),
-    created_time timestamp
+    created_time timestamp,
+    web_view_link varchar2(2000)
   );
 
   type events_ntt is table of event_rt;
@@ -13,7 +14,8 @@ create or replace package google_drive_pkg as
     id           varchar2(500),
     name         varchar2(500),
     parent_id    varchar2(500),
-    created_time timestamp
+    created_time timestamp,
+    web_view_link varchar2(500)
   );
     
   type folders_ntt is table of folder_rt;

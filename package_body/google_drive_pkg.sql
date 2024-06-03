@@ -490,7 +490,7 @@ create or replace package body google_drive_pkg as
       chr(38) ||
       'q=(' || pi_parents_expression || ') and trashed=false and mimeType=''application/vnd.google-apps.folder''' ||
       chr(38) ||
-      'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime)' ||
+      'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime,webViewLink)' ||
       chr(38) ||
       'pageSize=1000' ||
       case 
@@ -529,7 +529,8 @@ create or replace package body google_drive_pkg as
             apex_json.get_varchar2('files[%d].id', i),
             apex_json.get_varchar2('files[%d].name', i),
             l_parents(l_parents.first),
-            l_created_time_tmstp
+            l_created_time_tmstp,
+            apex_json.get_varchar2('files[%d].webViewLink', i)
           );
 
         end loop;
@@ -911,7 +912,8 @@ create or replace package body google_drive_pkg as
       select l.name as location,
              y.name as year,
              e.name as event_name,
-             e.created_time
+             e.created_time,
+             e.web_view_link
         from table(l_location_call_result.folders_nt) l
         join table(l_year_call_result.folders_nt) y
           on l.id = y.parent_id
@@ -923,7 +925,8 @@ create or replace package body google_drive_pkg as
           rec.location,
           rec.year,
           rec.event_name,
-          rec.created_time
+          rec.created_time,
+          rec.web_view_link
         )
       );
     end loop;

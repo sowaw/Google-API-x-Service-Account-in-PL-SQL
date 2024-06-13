@@ -1,11 +1,12 @@
 create or replace package google_drive_pkg as
 
   type event_rt is record (
-    location     varchar2(2000),
-    year         varchar2(2000),
-    event_name   varchar2(2000),
-    created_time timestamp,
-    web_view_link varchar2(2000)
+    location         varchar2(2000),
+    year             varchar2(2000),
+    event_name       varchar2(2000),
+    created_time     timestamp,
+    web_view_link    varchar2(2000),
+    has_begin_end_yn varchar2(500) -- TODO changeit
   );
 
   type events_ntt is table of event_rt;

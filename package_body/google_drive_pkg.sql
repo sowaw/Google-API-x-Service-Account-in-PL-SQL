@@ -462,7 +462,8 @@ create or replace package body google_drive_pkg as
   function f_get_files_by_parents (
     pi_parents_expression in varchar2,
     pi_access_token       in varchar2,
-    pi_year_folder_name   in varchar2 default null
+    pi_name_contains_phrase in varchar2 default null,
+    pi_limit_to_folders   in boolean default true
   )
   return call_result
   is
@@ -488,18 +489,26 @@ create or replace package body google_drive_pkg as
     l_list_files_api_url := 
       'https://www.googleapis.com/drive/v3/files?' ||
       chr(38) ||
-      'q=(' || pi_parents_expression || ') and trashed=false and mimeType=''application/vnd.google-apps.folder''' ||
+      'q=(' || pi_parents_expression || ') and trashed=false' || 
+            case 
+        when pi_name_contains_phrase is not null then
+           ' and name contains ''' || trim(pi_name_contains_phrase) || ''''
+        else
+          null
+      end ||
+      case 
+        when pi_limit_to_folders then 
+        ' and mimeType=''application/vnd.google-apps.folder'''
+      else 
+        null 
+      end ||
       chr(38) ||
       'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime,webViewLink)' ||
       chr(38) ||
-      'pageSize=1000' ||
-      case 
-        when pi_year_folder_name is not null then
-          chr(38) || 'name=''' || trim(pi_year_folder_name) || ''''
-        else
-          null
-      end
+      'pageSize=1000'
       ;
+
+    logger.log(l_list_files_api_url);
 
     while l_incomplete_call loop
       l_list_files_api_target_url := 
@@ -675,6 +684,46 @@ create or replace package body google_drive_pkg as
       return l_return;
   end f_get_filtered_event_folders;
 
+  function f_get_filtered_event_files(
+    pi_folders_nt in folders_ntt
+  ) 
+  return call_result
+  is
+    l_return call_result;
+  begin
+    select f2.id,
+           f2.name,
+           f2.parent_id,
+           f2.created_time,
+           f2.web_view_link 
+      bulk collect 
+      into l_return.folders_nt
+      from (
+        select row_number() over(partition by f1.parent_id order by f1.name) as rn,
+               f1.*
+          from table(pi_folders_nt) f1
+         where lower(f1.name) like '%begin%' 
+      ) f2
+      where f2.rn = 1;   
+
+    l_return.is_success := true;
+
+    return l_return;
+  exception
+    when others then
+      apex_debug.error(
+        p_message => 'Error in code unit: %s. %s',
+        p0        => 'f_get_filtered_event_files',
+        p1        => sqlerrm
+      );
+
+      l_return.is_success := false;
+      l_return.code_unit := 'f_get_filtered_event_files';
+      l_return.error_message := sqlerrm;
+
+      return l_return;
+  end f_get_filtered_event_files;
+
   function f_get_batches_with_parent_id_exprs(
     pi_parent_call_result in call_result
   )
@@ -682,7 +731,7 @@ create or replace package body google_drive_pkg as
   is
     l_floor      number;
     l_mod        number;
-    l_batch_size number := 500;
+    l_batch_size number := 250;
     l_parent_ids apex_t_varchar2;  
 
     l_return     parent_id_exprs_ntt := parent_id_exprs_ntt();
@@ -797,6 +846,7 @@ create or replace package body google_drive_pkg as
     l_location_call_result call_result;
     l_year_call_result     call_result;
     l_event_call_result    call_result;
+    l_file_call_result     call_result;
 
     l_code_unit            varchar2(500);
     l_error_message        varchar2(4000);
@@ -905,20 +955,68 @@ create or replace package body google_drive_pkg as
       l_error_message := l_event_call_result.error_message;
 
       raise e_getting_counts_error;
-    end if;    
-    
+    end if;
+
+    ------------------------------------------------------------
     -- STEP 4.
+    -- get files for each event to check if they comply begin-end notation
+    l_parent_id_exprs_nt := f_get_batches_with_parent_id_exprs(
+      pi_parent_call_result => l_event_call_result
+    );
+
+    l_file_call_result.folders_nt := folders_ntt();
+
+    for i in 1..l_parent_id_exprs_nt.count loop
+      l_call_result := f_get_files_by_parents(
+        pi_parents_expression => l_parent_id_exprs_nt(i),
+        pi_access_token       => l_access_token,
+        pi_name_contains_phrase => 'begin',
+        pi_limit_to_folders   => false  
+      );
+
+      if not l_call_result.is_success then
+        l_code_unit     := l_call_result.code_unit;
+        l_error_message := l_call_result.error_message;
+
+        raise e_getting_counts_error;
+      end if;
+
+      l_file_call_result.folders_nt := l_file_call_result.folders_nt multiset union l_call_result.folders_nt;     
+    end loop;
+
+    l_file_call_result := f_get_filtered_event_files(
+      pi_folders_nt => l_file_call_result.folders_nt
+    );
+
+    if not l_file_call_result.is_success then
+      l_code_unit     := l_file_call_result.code_unit;
+      l_error_message := l_file_call_result.error_message;
+
+      raise e_getting_counts_error;
+    end if;    
+
+    ------------------------------------------------------------
+    
+    -- STEP 5.
     for rec in (
       select l.name as location,
              y.name as year,
              e.name as event_name,
              e.created_time,
-             e.web_view_link
+             e.web_view_link,
+            case
+              when f.id is not null then
+                'Y'
+              else
+                'N'
+            end as has_begin_end_yn
         from table(l_location_call_result.folders_nt) l
         join table(l_year_call_result.folders_nt) y
           on l.id = y.parent_id
         join table(l_event_call_result.folders_nt) e
           on y.id = e.parent_id
+        left join table(l_file_call_result.folders_nt) f
+          on e.id = f.parent_id
     ) loop
       pipe row(
         event_rt(
@@ -926,7 +1024,8 @@ create or replace package body google_drive_pkg as
           rec.year,
           rec.event_name,
           rec.created_time,
-          rec.web_view_link
+          rec.web_view_link,
+          rec.has_begin_end_yn
         )
       );
     end loop;

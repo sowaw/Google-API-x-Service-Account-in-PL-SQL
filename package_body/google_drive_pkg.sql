@@ -460,10 +460,10 @@ create or replace package body google_drive_pkg as
   end f_list_images_by_parent_folder;
 
   function f_get_files_by_parents (
-    pi_parents_expression in varchar2,
-    pi_access_token       in varchar2,
+    pi_parents_expression   in varchar2,
+    pi_access_token         in varchar2,
     pi_name_contains_phrase in varchar2 default null,
-    pi_limit_to_folders   in boolean default true
+    pi_limit_to_folders     in boolean  default true
   )
   return call_result
   is
@@ -490,7 +490,7 @@ create or replace package body google_drive_pkg as
       'https://www.googleapis.com/drive/v3/files?' ||
       chr(38) ||
       'q=(' || pi_parents_expression || ') and trashed=false' || 
-            case 
+      case 
         when pi_name_contains_phrase is not null then
            ' and name contains ''' || trim(pi_name_contains_phrase) || ''''
         else
@@ -507,8 +507,6 @@ create or replace package body google_drive_pkg as
       chr(38) ||
       'pageSize=1000'
       ;
-
-    logger.log(l_list_files_api_url);
 
     while l_incomplete_call loop
       l_list_files_api_target_url := 
@@ -957,7 +955,6 @@ create or replace package body google_drive_pkg as
       raise e_getting_counts_error;
     end if;
 
-    ------------------------------------------------------------
     -- STEP 4.
     -- get files for each event to check if they comply begin-end notation
     l_parent_id_exprs_nt := f_get_batches_with_parent_id_exprs(
@@ -994,8 +991,6 @@ create or replace package body google_drive_pkg as
 
       raise e_getting_counts_error;
     end if;    
-
-    ------------------------------------------------------------
     
     -- STEP 5.
     for rec in (

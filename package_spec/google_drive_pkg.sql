@@ -6,26 +6,26 @@ create or replace package google_drive_pkg as
     event_name       varchar2(2000),
     created_time     timestamp,
     web_view_link    varchar2(2000),
-    has_begin_end_yn varchar2(500) -- TODO changeit
+    has_begin_end_yn varchar2(1)
   );
 
   type events_ntt is table of event_rt;
 
   type folder_rt is record (
-    id           varchar2(500),
-    name         varchar2(500),
-    parent_id    varchar2(500),
-    created_time timestamp,
+    id            varchar2(500),
+    name          varchar2(500),
+    parent_id     varchar2(500),
+    created_time  timestamp,
     web_view_link varchar2(500)
   );
     
   type folders_ntt is table of folder_rt;
 
   type call_result is record (
-    is_success      boolean,
-    folders_nt      folders_ntt,
-    code_unit       varchar2(500),
-    error_message   varchar2(4000)
+    is_success    boolean,
+    folders_nt    folders_ntt,
+    code_unit     varchar2(500),
+    error_message varchar2(4000)
   );
 
   type parent_id_exprs_ntt is table of varchar2(28000);

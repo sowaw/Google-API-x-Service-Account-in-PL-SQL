@@ -477,6 +477,8 @@ create or replace package body google_drive_pkg as
 
     l_incomplete_call boolean;
     l_next_page_token varchar2(4000);
+
+    l_folders_from_last_call folders_ntt := folders_ntt();
   begin
     apex_web_service.g_request_headers.delete;
     apex_web_service.g_request_headers(1).name  := 'Authorization';
@@ -523,28 +525,39 @@ create or replace package body google_drive_pkg as
       );
       
       if apex_web_service.g_status_code = 200 then
-        apex_json.parse(l_clob);
+        select jt.id,
+               jt.name,
+               jt.parent_id,
+               jt.created_time,
+               jt.web_view_link
+          bulk collect
+          into l_folders_from_last_call
+          from dual,
+               json_table(
+                 l_clob,
+                 '$.files[*]'
+                 columns(
+                   parent_id     varchar2(200) path '$.parents[0]',
+                   web_view_link varchar2(200) path '$.webViewLink', 
+                   id            varchar2(200) path '$.id',  
+                   name          varchar2(200) path '$.name',
+                   created_time  timestamp     path '$.createdTime'
+                 )
+               ) jt;
 
-        l_return.folders_nt.extend(apex_json.get_count(p_path => 'files'));
+        l_return.folders_nt := l_return.folders_nt multiset union l_folders_from_last_call;   
 
-        for i in 1..apex_json.get_count(p_path => 'files') loop
-          l_parents := apex_json.get_t_varchar2('files[%d].parents', i);
+        l_folders_from_last_call.delete; 
 
-          l_created_time_tmstp := to_timestamp(apex_json.get_varchar2('files[%d].createdTime', i), 'yyyy-mm-dd"T"hh24:mi:ss.FF3"Z"');
-
-          l_return.folders_nt(l_element_counter + i) := folder_rt(
-            apex_json.get_varchar2('files[%d].id', i),
-            apex_json.get_varchar2('files[%d].name', i),
-            l_parents(l_parents.first),
-            l_created_time_tmstp,
-            apex_json.get_varchar2('files[%d].webViewLink', i)
-          );
-
-        end loop;
-
-        l_element_counter := l_element_counter + apex_json.get_count(p_path => 'files');
-
-        l_next_page_token := apex_json.get_varchar2('nextPageToken');
+        begin
+          select json_value(l_clob, '$.nextPageToken')
+            into l_next_page_token
+            from dual;
+        exception
+          when no_data_found then
+            l_next_page_token := null;
+        end;       
+        
         l_incomplete_call :=
           case
             when l_next_page_token is not null then
@@ -850,7 +863,9 @@ create or replace package body google_drive_pkg as
     l_error_message        varchar2(4000);
 
     l_parent_id_exprs_nt parent_id_exprs_ntt;
-    l_call_result call_result;
+    l_call_result        call_result;
+
+    l_timer number;
   begin
     l_root_folder_id := f_extract_folder_id_from_url(pi_url => pi_root_folder_url);
 
@@ -956,7 +971,7 @@ create or replace package body google_drive_pkg as
     end if;
 
     -- STEP 4.
-    -- get files for each event to check if they comply begin-end notation
+    -- get files for each event to check if contains at least one 'begin' word in file name
     l_parent_id_exprs_nt := f_get_batches_with_parent_id_exprs(
       pi_parent_call_result => l_event_call_result
     );
@@ -965,10 +980,10 @@ create or replace package body google_drive_pkg as
 
     for i in 1..l_parent_id_exprs_nt.count loop
       l_call_result := f_get_files_by_parents(
-        pi_parents_expression => l_parent_id_exprs_nt(i),
-        pi_access_token       => l_access_token,
+        pi_parents_expression   => l_parent_id_exprs_nt(i),
+        pi_access_token         => l_access_token,
         pi_name_contains_phrase => 'begin',
-        pi_limit_to_folders   => false  
+        pi_limit_to_folders     => false  
       );
 
       if not l_call_result.is_success then
@@ -990,7 +1005,7 @@ create or replace package body google_drive_pkg as
       l_error_message := l_file_call_result.error_message;
 
       raise e_getting_counts_error;
-    end if;    
+    end if;
     
     -- STEP 5.
     for rec in (

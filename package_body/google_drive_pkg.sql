@@ -509,7 +509,7 @@ create or replace package body google_drive_pkg as
         null 
       end ||
       chr(38) ||
-      'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime,webViewLink)' ||
+      'fields=incompleteSearch,nextPageToken,files(id,name,parents,createdTime,webViewLink,mimeType)' ||
       chr(38) ||
       'pageSize=1000'
       ;
@@ -533,7 +533,8 @@ create or replace package body google_drive_pkg as
                jt.name,
                jt.parent_id,
                jt.created_time,
-               jt.web_view_link
+               jt.web_view_link,
+               jt.mime_type
           bulk collect
           into l_folders_from_last_call
           from dual,
@@ -545,7 +546,8 @@ create or replace package body google_drive_pkg as
                    web_view_link varchar2(200) path '$.webViewLink', 
                    id            varchar2(200) path '$.id',  
                    name          varchar2(200) path '$.name',
-                   created_time  timestamp     path '$.createdTime'
+                   created_time  timestamp     path '$.createdTime',
+                   mime_type     varchar2(200) path '$.mimeType'
                  )
                ) jt;
 
@@ -710,7 +712,8 @@ create or replace package body google_drive_pkg as
            f2.name,
            f2.parent_id,
            f2.created_time,
-           f2.web_view_link 
+           f2.web_view_link,
+           f2.mime_type 
       bulk collect 
       into l_return.folders_nt
       from (
@@ -750,7 +753,8 @@ create or replace package body google_drive_pkg as
            f2.name,
            f2.parent_id,
            f2.created_time,
-           f2.web_view_link 
+           f2.web_view_link,
+           f2.mime_type 
       bulk collect 
       into l_return.folders_nt
       from (
@@ -1193,7 +1197,8 @@ create or replace package body google_drive_pkg as
     for rec in (
       select  s.name,
               s.web_view_link as species_folder_url,
-              f.name          as file_name
+              f.name          as file_name,
+              f.mime_type     as mime_type
         from table(l_species_call_result.folders_nt) s
         left join table(l_files_in_species_call_result.folders_nt) f
           on s.id = f.parent_id
@@ -1202,7 +1207,8 @@ create or replace package body google_drive_pkg as
         species_rt(
           rec.name,
           rec.species_folder_url,
-          rec.file_name
+          rec.file_name,
+          rec.mime_type
         )
       );
     end loop;   

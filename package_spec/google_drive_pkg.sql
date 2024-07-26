@@ -17,7 +17,8 @@ create or replace package google_drive_pkg as
     name          varchar2(500),
     parent_id     varchar2(500),
     created_time  timestamp,
-    web_view_link varchar2(500)
+    web_view_link varchar2(500),
+    mime_type     varchar2(500)
   );
     
   type folders_ntt is table of folder_rt;
@@ -32,7 +33,8 @@ create or replace package google_drive_pkg as
   type species_rt is record (
     name               varchar2(500),
     species_folder_url varchar2(500),
-    file_name          varchar2(500)
+    file_name          varchar2(500),
+    mime_type          varchar2(500)
   );
 
   type species_ntt is table of species_rt;

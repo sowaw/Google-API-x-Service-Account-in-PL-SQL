@@ -35,6 +35,10 @@ create or replace package body google_drive_pkg as
   e_getting_counts_error exception;
   pragma exception_init(e_getting_counts_error, -20007);
 
+  -- an issue occurred during getting data for species
+  e_getting_species_error exception;
+  pragma exception_init(e_getting_species_error, -20008);  
+
 -- PRIVATE PROCEDURES AND FUNCTIONS
 
   procedure p_add_apex_error(pi_message in varchar2)
@@ -1123,6 +1127,103 @@ create or replace package body google_drive_pkg as
       raise;
   end f_get_file_list_for_counts;
 
+  function f_get_species(
+    pi_root_folder_url in varchar2 default 'https://drive.google.com/drive/folders/1R6JygICaUQ35b3vvbWVHv4xns6zEjvde'
+  ) 
+  return species_ntt pipelined
+  is
+    l_root_folder_id varchar2(50);
+    l_access_token   varchar2(4000);
+    l_parents_expr   varchar2(32000);  
+
+    l_species_call_result          call_result;
+    l_files_in_species_call_result call_result;
+    l_call_result                  call_result;     
+
+    l_code_unit     varchar2(500);
+    l_error_message varchar2(4000); 
+
+    l_parent_id_exprs_nt parent_id_exprs_ntt;   
+  begin
+    l_root_folder_id := f_extract_folder_id_from_url(pi_url => pi_root_folder_url);
+
+    l_access_token := f_get_access_token(pi_must_get_new_token => true);
+
+    -- STEP 1.
+    -- no need to do the for-looping
+    l_parents_expr := '''' || l_root_folder_id || '''' || ' in parents';
+
+    l_species_call_result := f_get_files_by_parents(
+      pi_parents_expression => l_parents_expr,
+      pi_access_token       => l_access_token
+    );
+
+    if not l_species_call_result.is_success then
+      l_code_unit     := l_species_call_result.code_unit;
+      l_error_message := l_species_call_result.error_message;
+
+      raise e_getting_species_error;
+    end if;
+
+    -- STEP 2. 
+    -- fetching files from species directories
+    l_parent_id_exprs_nt := f_get_batches_with_parent_id_exprs(
+      pi_parent_call_result => l_species_call_result
+    );
+
+    l_files_in_species_call_result.folders_nt := folders_ntt();
+
+    for i in 1..l_parent_id_exprs_nt.count loop
+      l_call_result := f_get_files_by_parents(
+        pi_parents_expression => l_parent_id_exprs_nt(i),
+        pi_access_token       => l_access_token,
+        pi_limit_to_folders   => false  
+      );
+
+      if not l_call_result.is_success then
+        l_code_unit     := l_call_result.code_unit;
+        l_error_message := l_call_result.error_message;
+
+        raise e_getting_counts_error;
+      end if;  
+
+      l_files_in_species_call_result.folders_nt := l_files_in_species_call_result.folders_nt multiset union l_call_result.folders_nt;         
+    end loop;
+
+    for rec in (
+      select  s.name,
+              s.web_view_link as species_folder_url,
+              f.name          as file_name
+        from table(l_species_call_result.folders_nt) s
+        left join table(l_files_in_species_call_result.folders_nt) f
+          on s.id = f.parent_id
+    ) loop
+      pipe row(
+        species_rt(
+          rec.name,
+          rec.species_folder_url,
+          rec.file_name
+        )
+      );
+    end loop;   
+
+  exception
+    when e_getting_counts_error then
+      pipe row(
+        species_rt(
+          l_code_unit,
+          l_error_message,
+          null
+        )
+      );  
+    when others then
+      apex_debug.error(
+        p_message => 'Error in code unit: %s. %s',
+        p0        => 'f_get_species',
+        p1        => sqlerrm
+      );     
+      raise;
+  end f_get_species;
 
 end google_drive_pkg;
 /

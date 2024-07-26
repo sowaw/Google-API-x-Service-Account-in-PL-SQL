@@ -29,6 +29,14 @@ create or replace package google_drive_pkg as
     error_message varchar2(4000)
   );
 
+  type species_rt is record (
+    name               varchar2(500),
+    species_folder_url varchar2(500),
+    file_name          varchar2(500)
+  );
+
+  type species_ntt is table of species_rt;
+
   type parent_id_exprs_ntt is table of varchar2(28000);
 
   procedure p_get_before_and_after_images(
@@ -39,6 +47,10 @@ create or replace package google_drive_pkg as
     pi_root_folder_url in varchar2 default 'https://drive.google.com/drive/folders/16-r6rkahOyiBbEzfAdA-ilSSebmuPSPr',
     pi_year            in varchar2 default null
   ) return events_ntt pipelined;
+
+  function f_get_species(
+    pi_root_folder_url in varchar2 default 'https://drive.google.com/drive/folders/1R6JygICaUQ35b3vvbWVHv4xns6zEjvde'
+  ) return species_ntt pipelined;
 
 end google_drive_pkg;
 /

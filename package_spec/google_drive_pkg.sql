@@ -31,8 +31,10 @@ create or replace package google_drive_pkg as
   );
 
   type species_rt is record (
-    name               varchar2(500),
+    species_name       varchar2(500),
     species_folder_url varchar2(500),
+    file_url           varchar2(500),
+    file_id            varchar2(500),   
     file_name          varchar2(500),
     mime_type          varchar2(500)
   );

@@ -1195,8 +1195,10 @@ create or replace package body google_drive_pkg as
     end loop;
 
     for rec in (
-      select  s.name,
+      select  s.name          as species_name,
               s.web_view_link as species_folder_url,
+              f.web_view_link as file_url,
+              f.id            as file_id,
               f.name          as file_name,
               f.mime_type     as mime_type
         from table(l_species_call_result.folders_nt) s
@@ -1205,8 +1207,10 @@ create or replace package body google_drive_pkg as
     ) loop
       pipe row(
         species_rt(
-          rec.name,
+          rec.species_name,
           rec.species_folder_url,
+          rec.file_url,
+          rec.file_id,
           rec.file_name,
           rec.mime_type
         )

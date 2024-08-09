@@ -37,7 +37,11 @@ create or replace package body google_drive_pkg as
 
   -- an issue occurred during getting data for species
   e_getting_species_error exception;
-  pragma exception_init(e_getting_species_error, -20008);  
+  pragma exception_init(e_getting_species_error, -20008);
+
+  -- error when executing function to get items in Google Drive folder
+  e_getting_folder_items_error exception;
+  pragma exception_init(e_getting_folder_items_error, -20009);
 
 -- PRIVATE PROCEDURES AND FUNCTIONS
 
@@ -475,10 +479,7 @@ create or replace package body google_drive_pkg as
     l_clob                      clob;
     l_list_files_api_url        varchar2(32000);
     l_list_files_api_target_url varchar2(32000);
-    l_parents                   apex_t_varchar2;
-    l_created_time_tmstp        timestamp;
     l_return                    call_result;
-    l_element_counter           number := 0;
 
     l_incomplete_call boolean;
     l_next_page_token varchar2(4000);
@@ -1235,6 +1236,213 @@ create or replace package body google_drive_pkg as
       );     
       raise;
   end f_get_species;
+
+  function f_extract_items_from_api_response(
+    pi_clob clob
+  )
+  return google_api_item_ntt 
+  is
+    l_return google_api_item_ntt;
+  begin
+    select jt.id,
+           jt.name,
+           jt.parent_id,
+           jt.created_time,
+           jt.web_view_link,
+           jt.mime_type
+    bulk collect
+    into l_return
+    from dual,
+         json_table(
+           pi_clob,
+           '$.files[*]'
+           columns(
+             id            varchar2(500) path '$.id',
+             name          varchar2(500) path '$.name',
+             parent_id     varchar2(500) path '$.parents[0]',
+             created_time  timestamp     path '$.createdTime',
+             web_view_link varchar2(500) path '$.webViewLink',
+             mime_type     varchar2(500) path '$.mimeType'
+           )
+         ) jt;
+
+    return l_return;
+  exception
+    when others then
+      raise;
+  end f_extract_items_from_api_response;
+
+  function f_get_items_in_folder(
+    pi_folder_url in varchar2
+  ) 
+  return google_api_item_ntt pipelined
+  is
+    l_code_unit     varchar2(500);
+    l_error_message varchar2(4000);
+
+    l_access_token varchar2(4000);
+    l_clob         clob;
+    l_folder_id    varchar2(50);
+    l_api_url_core varchar2(4000);
+    l_api_url      varchar2(4000);
+
+    l_incomplete_call boolean;
+    l_next_page_token varchar2(4000);
+
+    l_google_api_all_items      google_api_item_ntt := google_api_item_ntt();
+    l_google_api_response_items google_api_item_ntt := google_api_item_ntt();
+  begin
+    if trim(pi_folder_url) is null then
+      l_code_unit := 'f_extract_folder_id_from_url';
+      l_error_message := 'Passed folder URL cannot be empty';
+
+      raise e_getting_folder_items_error;
+    end if;
+
+    -- extract folder id from the passed URL
+    l_folder_id := f_extract_folder_id_from_url(pi_url => pi_folder_url);
+
+    if l_folder_id is null then
+      l_code_unit := 'f_extract_folder_id_from_url';
+      l_error_message := 'Function extracting folder ID returned without value';
+
+      raise e_folder_id_from_url_is_empty;
+    end if;
+
+    -- get access token
+    l_access_token := f_get_access_token;   
+
+    l_api_url_core :=
+      'https://www.googleapis.com/drive/v3/files?' ||
+      chr(38) ||
+      'q=''' || l_folder_id || ''' in parents and trashed=false' ||
+      chr(38) ||
+      'fields=nextPageToken,files(id,name,parents,createdTime,webViewLink,mimeType)' ||
+      chr(38) ||
+      'pageSize=1000'
+      ;
+
+    l_incomplete_call := true;
+    l_next_page_token := null;
+
+    while l_incomplete_call loop
+      -- prepare correct form of the URL
+      l_api_url := 
+        case 
+          when l_next_page_token is not null then
+            l_api_url_core || chr(38) || 'pageToken=' || l_next_page_token
+          else
+            l_api_url_core
+          end;
+
+      -- call the API to list items
+      apex_web_service.g_request_headers.delete;
+      apex_web_service.g_request_headers(1).name := 'Authorization';
+      apex_web_service.g_request_headers(1).value := l_access_token;     
+
+      --#########################################    
+      l_clob := apex_web_service.make_rest_request(
+        p_url         => l_api_url,
+        p_http_method => 'GET'
+      );
+
+      if apex_web_service.g_status_code = 200 then
+        l_google_api_response_items := f_extract_items_from_api_response(pi_clob => l_clob);
+
+        l_google_api_all_items := l_google_api_all_items multiset union l_google_api_response_items;
+
+      elsif apex_web_service.g_status_code = 401 then
+        l_access_token := f_get_access_token(pi_must_get_new_token => true);
+
+        apex_web_service.g_request_headers(1).value := l_access_token;
+
+        l_clob := apex_web_service.make_rest_request(
+          p_url         => l_api_url,
+          p_http_method => 'GET'
+        );
+
+        if apex_web_service.g_status_code = 200 then
+          l_google_api_response_items := f_extract_items_from_api_response(pi_clob => l_clob);
+
+          l_google_api_all_items := l_google_api_all_items multiset union l_google_api_response_items;
+
+        else
+          l_code_unit := 'apex_web_service.make_rest_request';
+          l_error_message := apex_web_service.g_status_code || ' - ' || substr(apex_web_service.g_reason_phrase, 1, 3900);
+          raise e_getting_folder_items_error;
+        end if;
+      else
+        l_code_unit := 'apex_web_service.make_rest_request';
+        l_error_message := apex_web_service.g_status_code || ' - ' || substr(apex_web_service.g_reason_phrase, 1, 3900);
+        raise e_getting_folder_items_error;
+      end if;
+
+      --#########################################    
+
+      -- retrieve nextPageToken to check if there is more pages with API results
+      begin
+        select json_value(l_clob, '$.nextPageToken')
+          into l_next_page_token
+          from dual;
+      exception
+        when no_data_found then
+          l_next_page_token := null;
+      end;
+
+      -- update while loop variable value
+      l_incomplete_call :=
+        case
+          when l_next_page_token is not null then
+            true
+          else
+            false
+        end;                
+    end loop;
+
+    for i in 1..l_google_api_all_items.count loop
+      pipe row(
+        google_api_item_rt(
+          l_google_api_all_items(i).id,
+          l_google_api_all_items(i).name,
+          l_google_api_all_items(i).parent_id,
+          l_google_api_all_items(i).created_time,
+          l_google_api_all_items(i).web_view_link,
+          l_google_api_all_items(i).mime_type
+        )
+      );
+    end loop;  
+
+  exception
+    when e_getting_folder_items_error or e_folder_id_from_url_is_empty then
+      pipe row(
+        google_api_item_rt(
+          l_code_unit,
+          l_error_message,
+          null,
+          null,
+          null,
+          null
+        )
+      );
+    when others then
+      pipe row(
+        google_api_item_rt(
+          'Unexpected error',
+          sqlerrm,
+          null,
+          null,
+          null,
+          null
+        )
+      );
+
+      apex_debug.error(
+        p_message => 'Error in code unit: %s. %s',
+        p0        => 'f_get_items_in_folder',
+        p1        => sqlerrm
+      );
+      raise;
+  end f_get_items_in_folder;
 
 end google_drive_pkg;
 /

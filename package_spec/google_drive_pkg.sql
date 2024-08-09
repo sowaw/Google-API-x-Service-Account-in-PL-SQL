@@ -41,6 +41,17 @@ create or replace package google_drive_pkg as
 
   type species_ntt is table of species_rt;
 
+  type google_api_item_rt is record (
+    id            varchar2(500),
+    name          varchar2(500),
+    parent_id     varchar2(500),
+    created_time  timestamp,
+    web_view_link varchar2(500),
+    mime_type     varchar2(500)
+  );
+
+  type google_api_item_ntt is table of google_api_item_rt;
+
   type parent_id_exprs_ntt is table of varchar2(28000);
 
   procedure p_get_before_and_after_images(
@@ -55,6 +66,10 @@ create or replace package google_drive_pkg as
   function f_get_species(
     pi_root_folder_url in varchar2 default 'https://drive.google.com/drive/folders/1R6JygICaUQ35b3vvbWVHv4xns6zEjvde'
   ) return species_ntt pipelined;
+
+  function f_get_items_in_folder(
+    pi_folder_url in varchar2
+  ) return google_api_item_ntt pipelined;
 
 end google_drive_pkg;
 /

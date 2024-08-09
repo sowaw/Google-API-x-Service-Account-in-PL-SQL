@@ -374,7 +374,8 @@ create or replace package body google_drive_pkg as
 
     cursor cur_images_from_google_api(p_clob clob) is
       select id,
-             'https://drive.google.com/thumbnail?id=' || id || chr(38) || 'sz=w300' as thumbnail_url,
+             'https://drive.google.com/thumbnail?id=' || id as thumbnail_url,
+            --  || chr(38) || 'sz=w300' 
              name,
              sequence_number,
              lower_name

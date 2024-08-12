@@ -1249,7 +1249,9 @@ create or replace package body google_drive_pkg as
            jt.parent_id,
            jt.created_time,
            jt.web_view_link,
-           jt.mime_type
+           jt.mime_type,
+           jt.image_width,
+           jt.image_height
     bulk collect
     into l_return
     from dual,
@@ -1262,7 +1264,9 @@ create or replace package body google_drive_pkg as
              parent_id     varchar2(500) path '$.parents[0]',
              created_time  timestamp     path '$.createdTime',
              web_view_link varchar2(500) path '$.webViewLink',
-             mime_type     varchar2(500) path '$.mimeType'
+             mime_type     varchar2(500) path '$.mimeType',
+             image_width   number        path '$.imageMediaMetadata.width',
+             image_height  number        path '$.imageMediaMetadata.height'
            )
          ) jt;
 
@@ -1317,7 +1321,7 @@ create or replace package body google_drive_pkg as
       chr(38) ||
       'q=''' || l_folder_id || ''' in parents and trashed=false' ||
       chr(38) ||
-      'fields=nextPageToken,files(id,name,parents,createdTime,webViewLink,mimeType)' ||
+      'fields=nextPageToken,files(id,name,parents,createdTime,webViewLink,mimeType,imageMediaMetadata)' ||
       chr(38) ||
       'pageSize=1000'
       ;
@@ -1407,7 +1411,9 @@ create or replace package body google_drive_pkg as
           l_google_api_all_items(i).parent_id,
           l_google_api_all_items(i).created_time,
           l_google_api_all_items(i).web_view_link,
-          l_google_api_all_items(i).mime_type
+          l_google_api_all_items(i).mime_type,
+          l_google_api_all_items(i).image_width,
+          l_google_api_all_items(i).image_height
         )
       );
     end loop;  

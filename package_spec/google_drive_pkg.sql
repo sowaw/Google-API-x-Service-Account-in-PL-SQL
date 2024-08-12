@@ -47,7 +47,9 @@ create or replace package google_drive_pkg as
     parent_id     varchar2(500),
     created_time  timestamp,
     web_view_link varchar2(500),
-    mime_type     varchar2(500)
+    mime_type     varchar2(500),
+    image_width   number,
+    image_height  number
   );
 
   type google_api_item_ntt is table of google_api_item_rt;

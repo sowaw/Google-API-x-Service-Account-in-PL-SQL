@@ -1314,7 +1314,7 @@ create or replace package body google_drive_pkg as
     end if;
 
     -- get access token
-    l_access_token := f_get_access_token;   
+    l_access_token := f_get_access_token(pi_must_get_new_token => false);   
 
     l_api_url_core :=
       'https://www.googleapis.com/drive/v3/files?' ||
@@ -1342,7 +1342,7 @@ create or replace package body google_drive_pkg as
       -- call the API to list items
       apex_web_service.g_request_headers.delete;
       apex_web_service.g_request_headers(1).name := 'Authorization';
-      apex_web_service.g_request_headers(1).value := l_access_token;     
+      apex_web_service.g_request_headers(1).value := l_access_token;
 
       --#########################################    
       l_clob := apex_web_service.make_rest_request(
@@ -1358,6 +1358,8 @@ create or replace package body google_drive_pkg as
       elsif apex_web_service.g_status_code = 401 then
         l_access_token := f_get_access_token(pi_must_get_new_token => true);
 
+        apex_web_service.g_request_headers.delete;
+        apex_web_service.g_request_headers(1).name := 'Authorization';
         apex_web_service.g_request_headers(1).value := l_access_token;
 
         l_clob := apex_web_service.make_rest_request(
